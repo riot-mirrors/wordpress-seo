@@ -248,11 +248,7 @@ class WPSEO_Sitemaps {
 		// Let's flush the object cache so we're not left with garbage from other plugins
 		wp_cache_flush();
 		
-		$images_in_sitemap = isset($options['xml_include_images']) && $options['xml_include_images'];
 		$stackedurls = array();
-
-		// If we're not going to include images, we might as well save ourselves the memory of grabbing post_content.
-		$post_content_query = $images_in_sitemap ? 'post_content,' : '';
 
 		$steps = 25;
 		$n = (int) get_query_var( 'sitemap_n' );
@@ -263,7 +259,7 @@ class WPSEO_Sitemaps {
 
 		// We grab post_date, post_name, post_author and post_status too so we can throw these objects into get_permalink, which saves a get_post call for each permalink.
 		while( $total > $offset ) {
-			$posts = $wpdb->get_results("SELECT ID, $post_content_query post_name, post_author, post_parent, post_modified_gmt, post_date, post_date_gmt
+			$posts = $wpdb->get_results("SELECT ID, post_content, post_name, post_author, post_parent, post_modified_gmt, post_date, post_date_gmt
 											FROM $wpdb->posts
 											WHERE post_status = 'publish'
 											AND	post_password = ''
@@ -292,11 +288,14 @@ class WPSEO_Sitemaps {
 
 				$url['mod']	= ( isset( $p->post_modified_gmt ) && $p->post_modified_gmt != '0000-00-00 00:00:00' ) ? $p->post_modified_gmt : $p->post_date_gmt ;
 				$url['chf'] = 'weekly';
+				$url['loc'] = get_permalink( $p );
 
-				if ( wpseo_get_value('canonical', $p->ID) && wpseo_get_value('canonical', $p->ID) != '' ) {
-					$url['loc'] = wpseo_get_value('canonical', $p->ID);
+				$canonical = wpseo_get_value('canonical', $p->ID);
+				if ( $canonical && $canonical != '' && $canonical != $url['loc']) {
+					// Let's assume that if a canonical is set for this page and it's different from the URL of this post, that page is either
+					// already in the XML sitemap OR is on an external site, either way, we shouldn't include it here.
+					continue;
 				} else {
-					$url['loc'] = get_permalink( $p );
 
 					if ( isset($options['trailingslash']) && $options['trailingslash'] && $p->post_type != 'post' )
 						$url['loc'] = trailingslashit( $url['loc'] );
@@ -305,43 +304,41 @@ class WPSEO_Sitemaps {
 				$pri = wpseo_get_value('sitemap-prio', $p->ID);
 				if (is_numeric($pri))
 					$url['pri'] = $pri;
-				elseif ($p->post_parent == 0 && $p->post_type = 'page')
+				elseif ($p->post_parent == 0 && $p->post_type == 'page')
 					$url['pri'] = 0.8;
 				else
 					$url['pri'] = 0.6;
 
-				if ( $images_in_sitemap ) {
-					$url['images'] = array();
-					if ( preg_match_all( '/<img [^>]+>/', $p->post_content, $matches ) ) {
-						foreach ( $matches[0] as $img ) {
-							// FIXME: get true caption instead of alt / title
-							if ( preg_match( '/src=("|\')([^"|\']+)("|\')/', $img, $match ) ) {
-								$src = $match[2];
-								if ( strpos($src, 'http') !== 0 ) {
-									if ( $src[0] != '/' )
-										continue;
-									$src = get_bloginfo('url') . $src;
-								}
-
-								if ( $src != esc_url( $src ) )
+				$url['images'] = array();
+				if ( preg_match_all( '/<img [^>]+>/', $p->post_content, $matches ) ) {
+					foreach ( $matches[0] as $img ) {
+						// FIXME: get true caption instead of alt / title
+						if ( preg_match( '/src=("|\')([^"|\']+)("|\')/', $img, $match ) ) {
+							$src = $match[2];
+							if ( strpos($src, 'http') !== 0 ) {
+								if ( $src[0] != '/' )
 									continue;
-
-								if ( isset( $url['images'][$src] ) )
-									continue;
-
-								$image = array();
-								if ( preg_match( '/title=("|\')([^"\']+)("|\')/', $img, $match ) )
-									$image['title'] = str_replace( array('-','_'), ' ', $match[2] );
-
-								if ( preg_match( '/alt=("|\')([^"\']+)("|\')/', $img, $match ) )
-									$image['alt'] = str_replace( array('-','_'), ' ', $match[2] );
-
-								$url['images'][$src] = $image;
+								$src = get_bloginfo('url') . $src;
 							}
+
+							if ( $src != esc_url( $src ) )
+								continue;
+
+							if ( isset( $url['images'][$src] ) )
+								continue;
+
+							$image = array();
+							if ( preg_match( '/title=("|\')([^"\']+)("|\')/', $img, $match ) )
+								$image['title'] = str_replace( array('-','_'), ' ', $match[2] );
+
+							if ( preg_match( '/alt=("|\')([^"\']+)("|\')/', $img, $match ) )
+								$image['alt'] = str_replace( array('-','_'), ' ', $match[2] );
+
+							$url['images'][$src] = $image;
 						}
 					}
-					$url['images'] = apply_filters( 'wpseo_sitemap_urlimages', $url['images'], $p->ID );
 				}
+				$url['images'] = apply_filters( 'wpseo_sitemap_urlimages', $url['images'], $p->ID );
 
 				if ( !in_array( $url['loc'], $stackedurls ) ) {
 					$output .= $this->sitemap_url( $url );
@@ -360,8 +357,7 @@ class WPSEO_Sitemaps {
 		}
 
 		$this->sitemap = '<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ';
-		if ( $images_in_sitemap )
-			$this->sitemap .= 'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" ';
+		$this->sitemap .= 'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" ';
 		$this->sitemap .= 'xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" ';
 		$this->sitemap .= 'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'."\n";
 		$this->sitemap .= $output . '</urlset>';
@@ -449,7 +445,7 @@ class WPSEO_Sitemaps {
 		if ( $this->stylesheet )
 			echo $this->stylesheet . "\n";
 		echo $this->sitemap;
-		echo "\n" . '<!-- XML Sitemap generated by Yoast WordPress SEO -->';
+		echo "\n" . '<!-- '.__( 'XML Sitemap generated by Yoast WordPress SEO', WPSEO_TEXT_DOMAIN ).' -->';
 		
 		if ( WP_DEBUG )
 			echo "\n" . '<!-- Built in ' . timer_stop() . ' seconds | ' . memory_get_peak_usage() . ' | ' . count($GLOBALS['wpdb']->queries) . ' -->';
@@ -493,14 +489,12 @@ class WPSEO_Sitemaps {
 		$base = $GLOBALS['wp_rewrite']->using_index_permalinks() ? 'index.php/' : '';
 		$sitemapurl = urlencode( home_url( $base . 'sitemap_index.xml' ) );
 
-		if ( isset($options['xml_ping_google']) && $options['xml_ping_google'] )
-			wp_remote_get('http://www.google.com/webmasters/tools/ping?sitemap='.$sitemapurl);
-
+		// Always ping Google and Bing, optionally ping Ask and Yahoo!
+		wp_remote_get('http://www.google.com/webmasters/tools/ping?sitemap='.$sitemapurl);
+		wp_remote_get('http://www.bing.com/webmaster/ping.aspx?sitemap='.$sitemapurl);
+		
 		if ( isset($options['xml_ping_yahoo']) && $options['xml_ping_yahoo'] )
-			wp_remote_get('http://search.yahooapis.com/SiteExplorerService/V1/updateNotification?appid=3usdTDLV34HbjQpIBuzMM1UkECFl5KDN7fogidABihmHBfqaebDuZk1vpLDR64I-&url='.$sitemapurl);
-
-		if ( isset($options['xml_ping_bing']) && $options['xml_ping_bing'] )
-			wp_remote_get('http://www.bing.com/webmaster/ping.aspx?sitemap='.$sitemapurl);
+				wp_remote_get('http://search.yahooapis.com/SiteExplorerService/V1/updateNotification?appid=3usdTDLV34HbjQpIBuzMM1UkECFl5KDN7fogidABihmHBfqaebDuZk1vpLDR64I-&url='.$sitemapurl);
 
 		if ( isset($options['xml_ping_ask']) && $options['xml_ping_ask'] )
 			wp_remote_get('http://submissions.ask.com/ping?sitemap='.$sitemapurl);
